@@ -13,6 +13,8 @@ GitHub CLI is supported for users on GitHub.com, GitHub Enterprise Cloud, and [s
 
 For [installation options see below](#installation), for usage instructions [see the manual](https://cli.github.com/manual/).
 
+For this fork's account selection and update steps, see [Fork setup](FORK_SETUP.md).
+
 ## Agent skills
 
 An [agent skill](https://agentskills.io) is available for driving `gh` from coding agents. Install or update it with the built-in `gh skill` command:
