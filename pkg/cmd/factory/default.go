@@ -2,9 +2,11 @@ package factory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/cli/cli/v2/api"
@@ -18,6 +20,7 @@ import (
 	"github.com/cli/cli/v2/pkg/cmd/extension"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 )
 
 var ssoHeader string
@@ -33,11 +36,11 @@ func New(appVersion string, invokingAgent string, cfgFunc func() (gh.Config, err
 
 	f.IOStreams = ios
 	f.TelemetryDisabler = telemetryDisabler
-	f.HttpClient = HttpClientFunc(cfgFunc, ios, appVersion, invokingAgent, telemetryDisabler)
+	f.GitClient = newGitClient(f) // Depends on IOStreams, and Executable
+	f.HttpClient = httpClientFunc(cfgFunc, ios, appVersion, invokingAgent, telemetryDisabler, f.GitClient)
 	f.PlainHttpClient = plainHttpClientFunc(ios, appVersion, invokingAgent, telemetryDisabler)
 	f.ExternalHttpClient = externalHttpClientFunc(ios, appVersion)
-	f.GitClient = newGitClient(f) // Depends on IOStreams, and Executable
-	f.Remotes = remotesFunc(f)    // Depends on Config, and GitClient
+	f.Remotes = remotesFunc(f) // Depends on Config, and GitClient
 	f.BaseRepo = BaseRepoFunc(f.Remotes)
 	f.Prompter = newPrompter(f)              // Depends on Config and IOStreams
 	f.Browser = newBrowser(f)                // Depends on Config, and IOStreams
@@ -187,8 +190,16 @@ func remotesFunc(f *cmdutil.Factory) func() (ghContext.Remotes, error) {
 }
 
 func HttpClientFunc(cfgFunc func() (gh.Config, error), ios *iostreams.IOStreams, appVersion string, invokingAgent string, telemetryDisabler ghtelemetry.Disabler) func() (*http.Client, error) {
+	return httpClientFunc(cfgFunc, ios, appVersion, invokingAgent, telemetryDisabler, &git.Client{})
+}
+
+func httpClientFunc(cfgFunc func() (gh.Config, error), ios *iostreams.IOStreams, appVersion string, invokingAgent string, telemetryDisabler ghtelemetry.Disabler, gitClient *git.Client) func() (*http.Client, error) {
 	return func() (*http.Client, error) {
 		cfg, err := cfgFunc()
+		if err != nil {
+			return nil, err
+		}
+		account, err := repoAccount(gitClient)
 		if err != nil {
 			return nil, err
 		}
@@ -200,6 +211,20 @@ func HttpClientFunc(cfgFunc func() (gh.Config, error), ios *iostreams.IOStreams,
 			InvokingAgent:     invokingAgent,
 			TelemetryDisabler: telemetryDisabler,
 		}
+		if account != "" {
+			authCfg := cfg.Authentication()
+			opts.TokenForHost = func(host string) (string, error) {
+				// Environment credentials always take precedence over a repository account.
+				if token, source := ghauth.TokenFromEnvOrConfig(host); source == "GH_TOKEN" || source == "GITHUB_TOKEN" || source == "GH_ENTERPRISE_TOKEN" || source == "GITHUB_ENTERPRISE_TOKEN" {
+					return token, nil
+				}
+				token, _, err := authCfg.TokenForUser(host, account)
+				if err != nil {
+					return "", fmt.Errorf("github.account %q has no stored token for %s: %w", account, host, err)
+				}
+				return token, nil
+			}
+		}
 		client, err := api.NewHTTPClient(opts)
 		if err != nil {
 			return nil, err
@@ -207,6 +232,30 @@ func HttpClientFunc(cfgFunc func() (gh.Config, error), ios *iostreams.IOStreams,
 		client.Transport = api.ExtractHeader("X-GitHub-SSO", &ssoHeader)(client.Transport)
 		return client, nil
 	}
+}
+
+func repoAccount(client *git.Client) (string, error) {
+	cmd, err := client.Command(context.Background(), "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return "", nil
+	}
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return "", nil
+	}
+	cmd, err = client.Command(context.Background(), "config", "--get", "github.account")
+	if err != nil {
+		return "", err
+	}
+	out, err = cmd.Output()
+	if err != nil {
+		var gitErr *git.GitError
+		if errors.As(err, &gitErr) && gitErr.ExitCode == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading github.account: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func plainHttpClientFunc(ios *iostreams.IOStreams, appVersion string, invokingAgent string, telemetryDisabler ghtelemetry.Disabler) func() (*http.Client, error) {

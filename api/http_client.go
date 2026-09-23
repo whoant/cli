@@ -20,10 +20,12 @@ type config interface {
 }
 
 type HTTPClientOptions struct {
-	AppVersion         string
-	InvokingAgent      string
-	CacheTTL           time.Duration
-	Config             config
+	AppVersion    string
+	InvokingAgent string
+	CacheTTL      time.Duration
+	Config        config
+	// TokenForHost optionally resolves a request token without changing the active account.
+	TokenForHost       func(string) (string, error)
 	EnableCache        bool
 	Log                io.Writer
 	LogColorize        bool
@@ -75,7 +77,7 @@ func NewHTTPClient(opts HTTPClientOptions) (*http.Client, error) {
 	}
 
 	if opts.Config != nil {
-		client.Transport = AddAuthTokenHeader(client.Transport, opts.Config)
+		client.Transport = addAuthTokenHeader(client.Transport, opts.Config, opts.TokenForHost)
 	}
 
 	if opts.TelemetryDisabler != nil {
@@ -152,6 +154,17 @@ func AddCacheTTLHeader(rt http.RoundTripper, ttl time.Duration) http.RoundTrippe
 
 // AddAuthTokenHeader adds an authentication token header for the host specified by the request.
 func AddAuthTokenHeader(rt http.RoundTripper, cfg config) http.RoundTripper {
+	return addAuthTokenHeader(rt, cfg, nil)
+}
+
+func addAuthTokenHeader(rt http.RoundTripper, cfg config, tokenForHost func(string) (string, error)) http.RoundTripper {
+	resolveToken := func(host string) (string, error) {
+		if tokenForHost != nil {
+			return tokenForHost(host)
+		}
+		token, _ := cfg.ActiveToken(host)
+		return token, nil
+	}
 	return &funcTripper{roundTrip: func(req *http.Request) (*http.Response, error) {
 		// If the header is already set in the request, don't overwrite it.
 		if req.Header.Get(authorization) != "" {
@@ -170,16 +183,19 @@ func AddAuthTokenHeader(rt http.RoundTripper, cfg config) http.RoundTripper {
 		}
 
 		hostnameInRequest := ghauth.NormalizeHostname(getHostname(req))
-		token, _ := cfg.ActiveToken(hostnameInRequest)
-		if token == "" {
+		token, err := resolveToken(hostnameInRequest)
+		if token == "" || err != nil {
 			// The request may be aimed at a host's api_host, which gh is
 			// not logged in to and so has no token of its own. Fall back
 			// to the token of the host it stands in for. This only ever
 			// adds a token where there would have been none, so hosts we
 			// already authenticate keep resolving exactly as before.
 			if canonicalHost, ok := cfg.HostForAPIHost(hostnameInRequest); ok {
-				token, _ = cfg.ActiveToken(canonicalHost)
+				token, err = resolveToken(canonicalHost)
 			}
+		}
+		if err != nil {
+			return nil, err
 		}
 		if token != "" {
 			req.Header.Set(authorization, fmt.Sprintf("token %s", token))
