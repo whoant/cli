@@ -49,10 +49,18 @@ git config --local --unset github.account
 The account must already have a stored token for the command's target host.
 If it does not, the command reports an error naming the account and host.
 
-## Merge updates from the original GitHub CLI
+## Keep the fork current with the original GitHub CLI
 
-After this fork's changes are merged into `trunk`, the fork has its own commits.
-Update it by merging `cli/cli`'s `trunk` into the fork's `trunk`:
+After the pull request containing it is merged into `trunk`, the
+[Sync fork with upstream](.github/workflows/sync-upstream.yml) workflow checks
+`cli/cli` once an hour and merges new `trunk` commits into `whoant/cli`.
+It does not force-push or discard this fork's commits. Scheduled runs can be
+delayed. After merging, open the fork's **Actions** tab and enable workflows if
+GitHub prompts you to do so. To check sooner, use **Actions > Sync fork with
+upstream > Run workflow**. If an upstream change conflicts with a fork change,
+the run fails and needs a manual merge.
+
+To merge updates manually, including when a conflict needs resolving, run:
 
 ```sh
 cd /path/to/your/cli-checkout
@@ -69,9 +77,11 @@ a merge conflict, resolve it before pushing. Do not force-sync the fork with
 upstream, because that would discard this fork's commits.
 
 Updating the GitHub repository does not replace the `gh` binary on your
-computer. Rebuild and reinstall after merging new upstream commits:
+computer. After the fork syncs, pull the updated branch, then rebuild and
+reinstall:
 
 ```sh
+git pull --ff-only origin trunk
 make install prefix="$HOME/.local"
 gh version
 ```

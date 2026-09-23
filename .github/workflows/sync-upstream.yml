@@ -1,0 +1,37 @@
+name: Sync fork with upstream
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-trunk
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'whoant/cli'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork trunk
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: trunk
+          fetch-depth: 0
+
+      - name: Merge upstream trunk into fork trunk
+        run: |
+          git remote add upstream https://github.com/cli/cli.git
+          git fetch --no-tags upstream trunk
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo "Fork trunk already contains upstream trunk"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit FETCH_HEAD
+          git push origin HEAD:trunk
