@@ -236,18 +236,21 @@ func httpClientFunc(cfgFunc func() (gh.Config, error), ios *iostreams.IOStreams,
 
 func repoAccount(client *git.Client) (string, error) {
 	cmd, err := client.Command(context.Background(), "rev-parse", "--is-inside-work-tree")
-	if err != nil {
-		return "", nil
+	if err == nil {
+		out, err := cmd.Output()
+		if err == nil && strings.TrimSpace(string(out)) == "true" {
+			return readRepoAccount(client)
+		}
 	}
-	out, err := cmd.Output()
-	if err != nil || strings.TrimSpace(string(out)) != "true" {
-		return "", nil
-	}
-	cmd, err = client.Command(context.Background(), "config", "--get", "github.account")
+	return "", nil
+}
+
+func readRepoAccount(client *git.Client) (string, error) {
+	cmd, err := client.Command(context.Background(), "config", "--get", "github.account")
 	if err != nil {
 		return "", err
 	}
-	out, err = cmd.Output()
+	out, err := cmd.Output()
 	if err != nil {
 		var gitErr *git.GitError
 		if errors.As(err, &gitErr) && gitErr.ExitCode == 1 {
